@@ -1,0 +1,13 @@
+[package]
+name = "safe-oxidizer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "safe_oxidizer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+rayon = "1.10"
+regex = "1"
