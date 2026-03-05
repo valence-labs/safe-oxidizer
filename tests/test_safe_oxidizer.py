@@ -214,6 +214,40 @@ class TestPerformance:
 
 
 # ---------------------------------------------------------------------------
+# Known roundtrip failures (ring closure conflicts across fragments)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "smi",
+    [
+        r"BrC1=CC=C2NC(=O)/C(=C3\SC(=S)NC3=O)C2=C1",
+        r"CC(=O)/N=C1\N(C)N=C(S(=O)(=O)N)S1",
+        r"CCCOC1=CC=C(/C=C2/SC(=O)NC2=O)C=C1",
+        r"OC(CCC(N)C(O)=O)=O.OC(C(N)CC1=CC=C(O)C=C1)=O.OC(C(N)C)=O.NCCCCC(N)C(O)=O.O=C(C)O.*.*.*.*.*",
+        r"C/C=C1\C(O[C@@H]2O[C@H](CO)[C@@H](O)[C@H](O)[C@H]2O)OC=C(C(=O)OC)C1CC(=O)OC[C@H]1[C@H](C(CO)CO)C[C@H](OC(=O)CC2C(C(=O)OC)=COC(O[C@@H]3O[C@H](CO)[C@@H](O)[C@H](O)[C@H]3O)/C2=C\C)[C@H]1C",
+        r"C/C=C1/[C@H](O[C@@H]2O[C@H](CO)[C@@H](O)[C@H](O)[C@H]2O)OC=C(C(=O)OC)[C@H]1CC(=O)OC[C@H]1O[C@@H](O[C@]23CO[C@H](C4=CC=C(O)C(OC)=C4)[C@H]2CO[C@@H]3C2=CC=C(O)C(OC)=C2)[C@H](O)[C@@H](O)[C@@H]1O",
+        r"CN(C)CC/C=C1/C2=C(C=CC=C2)COC2=C1C=C(CC(=O)NC(C#C)C1=CC=CC=C1)C=C2",
+        r"C[C@H]1CN(C2=C(C(F)(F)F)C=C(NC(=O)C/C=C3\CCCC=C3)C=C2)C[C@@H](C)O1",
+        r"O=C(C1=CNC2=NC=CC=C12)/N=C1\SC=C(CO)N1CC1=CC=CC=C1",
+    ],
+)
+def test_known_failures(smi):
+    """Roundtrip failures from eval_tokenizer_accuracy.py — ring closure conflicts."""
+    result = safe_oxidizer.safe_encode(smi)
+    assert dm.same_mol(smi, result), f"decoded: {result}"
+
+
+@pytest.mark.slow
+def test_known_failure_large_dna():
+    """Large DNA oligomer — ring closure numbers overflow causing duplicate labels."""
+    smi = (
+        "N1(C2OC(COP(N3CC(COP(N4CC(COP(N5CC(COP(N6CC(COOP(=O)(N7CC(COP(N8CC(COP(N9CC(COP(N%10CC(COP(N%11CC(COP(N%12CC(COP(N%13CC(COOP(=O)(N%14CC(COP(N%15CC(COP(N%16CC(COP(N%17CC(COP(N%18CC(COP(N%19CC(COP(N%20CC(COOP(=O)(N%21CC(COP(N%22CC(COP(N%23CC(COP(N%24CC(COP(N%25CC(COP(N%26CC(COP(N%27CC(COOP(=O)(N%28CC(COP(N%29CC(COP(N%30CC(COP(N%31CC(COP(N%32CCN(C(OCCOCCOCCO)=O)CC%32)(N(C)C)=O)OC(N%32C(=O)N=C(N)C=C%32)C%31)(N(C)C)=O)OC(N%31C(=O)NC(=O)C(C)=C%31)C%30)(N(C)C)=O)OC(N%30C(=O)N=C(N)C=C%30)C%29)(N(C)C)=O)OC(N%29C(=O)N=C(N)C=C%29)C%28)N(C)C)OC(N%28C=NC%29=C%28N=CN=C%29N)C%27)(N(C)C)=O)OC(N%27C=NC%28=C%27N=CN=C%28N)C%26)(N(C)C)=O)OC(N%26C(=O)N=C(N)C=C%26)C%25)(N(C)C)=O)OC(N%25C=NC%26=C%25N=CN=C%26N)C%24)(N(C)C)=O)OC(N%24C(=O)NC(=O)C(C)=C%24)C%23)(N(C)C)=O)OC(N%23C(=O)N=C(N)C=C%23)C%22)(N(C)C)=O)OC(N%22C=NC%23=C%22N=CN=C%23N)C%21)N(C)C)OC(N%21C=NC%22=C%21N=CN=C%22N)C%20)(N(C)C)=O)OC(N%20C=NC%21=C%20N=C(N)NC%21=O)C%19)(N(C)C)=O)OC(N%19C=NC%20=C%19N=C(N)NC%20=O)C%18)(N(C)C)=O)OC(N%18C=NC%19=C%18N=CN=C%19N)C%17)(N(C)C)=O)OC(N%17C=NC%18=C%17N=CN=C%18N)C%16)(N(C)C)=O)OC(N%16C=NC%17=C%16N=C(N)NC%17=O)C%15)(N(C)C)=O)OC(N%15C=NC%16=C%15N=CN=C%16N)C%14)N(C)C)OC(N%14C(=O)NC(=O)C(C)=C%14)C%13)(N(C)C)=O)OC(N%13C=NC%14=C%13N=C(N)NC%14=O)C%12)(N(C)C)=O)OC(N%12C=NC%13=C%12N=C(N)NC%13=O)C%11)(N(C)C)=O)OC(N%11C(=O)N=C(N)C=C%11)C%10)(N(C)C)=O)OC(N%10C=NC%11=C%10N=CN=C%11N)C9)(N(C)C)=O)OC(N9C(=O)NC(=O)C(C)=C9)C8)(N(C)C)=O)OC(N8C(=O)NC(=O)C(C)=C8)C7)N(C)C)OC(N7C(=O)NC(=O)C(C)=C7)C6)(N(C)C)=O)OC(N6C(=O)N=C(N)C=C6)C5)(N(C)C)=O)OC(N5C(=O)NC(=O)C(C)=C5)C4)(N(C)C)=O)OC(N4C=NC5=C4N=CN=C5N)C3)(N(C)C)=O)CNC2)C=NC2=C1N=C(N)NC2=O"
+    )
+    result = safe_oxidizer.safe_encode(smi)
+    assert dm.same_mol(smi, result), f"decoded: {result}"
+
+
+# ---------------------------------------------------------------------------
 # Large-scale chemical equivalence
 # ---------------------------------------------------------------------------
 
