@@ -4,6 +4,7 @@ pub mod fragment;
 pub mod mol;
 pub mod smiles_parser;
 pub mod smiles_writer;
+pub mod tokenizer;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -42,5 +43,6 @@ fn encode_batch(smiles_list: Vec<String>, n_jobs: Option<usize>) -> Vec<Option<S
 fn safe_oxidizer(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(safe_encode, m)?)?;
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
+    m.add_class::<tokenizer::SafeTokenizer>()?;
     Ok(())
 }
