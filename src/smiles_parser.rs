@@ -357,8 +357,16 @@ impl SmilesParser {
                 BondType::Single
             };
 
+            // Bond is stored as other→current (atom1=opening, atom2=closing).
+            // Stereo from the opening site (other_stereo) is already in the
+            // forward direction. Stereo from the closing site (pending_stereo)
+            // describes direction from current, so flip to match other→current.
             let stereo = if self.pending_stereo != BondStereo::None {
-                self.pending_stereo
+                match self.pending_stereo {
+                    BondStereo::Up => BondStereo::Down,
+                    BondStereo::Down => BondStereo::Up,
+                    BondStereo::None => BondStereo::None,
+                }
             } else {
                 other_stereo
             };

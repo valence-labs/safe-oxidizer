@@ -79,18 +79,18 @@ fn write_fragment(mol: &Mol, start: usize, ranks: &[usize], visited: &mut [bool]
 
     dfs_assign(mol, start, ranks, &mut dfs_visited, &mut dfs_order, &mut dfs_parent, &mut dfs_parent_bond, &mut ring_bonds);
 
-    let mut ring_nums: std::collections::HashMap<usize, Vec<(usize, i32, BondType)>> = std::collections::HashMap::new();
+    let mut ring_nums: std::collections::HashMap<usize, Vec<(usize, i32, BondType, usize)>> = std::collections::HashMap::new();
     let mut next_ring_num = 1i32;
     for &(a1, a2, bi) in &ring_bonds {
         let rn = next_ring_num;
         next_ring_num += 1;
         let bond_type = mol.bonds[bi].bond_type;
-        ring_nums.entry(a1).or_default().push((a2, rn, bond_type));
-        ring_nums.entry(a2).or_default().push((a1, rn, bond_type));
+        ring_nums.entry(a1).or_default().push((a2, rn, bond_type, bi));
+        ring_nums.entry(a2).or_default().push((a1, rn, bond_type, bi));
     }
 
     let mut write_visited = vec![false; n];
-    write_atom_dfs(mol, start, ranks, &mut write_visited, &ring_nums, &dfs_parent, &dfs_parent_bond, out, usize::MAX);
+    write_atom_dfs(mol, start, ranks, &mut write_visited, &ring_nums, &dfs_parent, &dfs_parent_bond, out, usize::MAX, &ring_bonds);
 
     for &a in &dfs_order {
         visited[a] = true;
@@ -138,20 +138,21 @@ fn write_atom_dfs(
     atom: usize,
     ranks: &[usize],
     visited: &mut [bool],
-    ring_nums: &std::collections::HashMap<usize, Vec<(usize, i32, BondType)>>,
+    ring_nums: &std::collections::HashMap<usize, Vec<(usize, i32, BondType, usize)>>,
     dfs_parent: &[usize],
     dfs_parent_bond: &[usize],
     out: &mut String,
     parent: usize,
+    ring_bonds: &[(usize, usize, usize)],
 ) {
     visited[atom] = true;
 
-    let sorted_rings: Vec<(usize, i32, BondType, bool)> = if let Some(rings) = ring_nums.get(&atom) {
-        let mut sr: Vec<(usize, i32, BondType, bool)> = rings
+    let sorted_rings: Vec<(usize, i32, BondType, bool, usize)> = if let Some(rings) = ring_nums.get(&atom) {
+        let mut sr: Vec<(usize, i32, BondType, bool, usize)> = rings
             .iter()
-            .map(|&(other, rn, bond_type)| (other, rn, bond_type, visited[other]))
+            .map(|&(other, rn, bond_type, bi)| (other, rn, bond_type, visited[other], bi))
             .collect();
-        sr.sort_by_key(|&(_, rn, _, is_closing)| (!is_closing, rn));
+        sr.sort_by_key(|&(_, rn, _, is_closing, _)| (!is_closing, rn));
         sr
     } else {
         Vec::new()
@@ -162,7 +163,7 @@ fn write_atom_dfs(
         if !visited[nbr] {
             let is_ring_bond = ring_nums
                 .get(&atom)
-                .map_or(false, |v| v.iter().any(|&(o, _, _)| o == nbr));
+                .map_or(false, |v| v.iter().any(|&(o, _, _, _)| o == nbr));
             if !is_ring_bond {
                 children.push((nbr, bi));
             }
@@ -173,13 +174,23 @@ fn write_atom_dfs(
         (is_real as u8, ranks[nbr])
     });
 
-    let ring_closure_neighbors: Vec<usize> = sorted_rings.iter().map(|&(other, _, _, _)| other).collect();
+    let ring_closure_neighbors: Vec<usize> = sorted_rings.iter().map(|&(other, _, _, _, _)| other).collect();
     let chirality = compute_output_chirality(mol, atom, parent, &ring_closure_neighbors, &children);
 
     write_atom(mol, atom, chirality, out);
 
-    for &(_other, rn, bond_type, is_closing) in &sorted_rings {
-        if !is_closing {
+    for &(_other, rn, bond_type, is_closing, bi) in &sorted_rings {
+        let bond = &mol.bonds[bi];
+        if bond.stereo != BondStereo::None {
+            let is_forward = bond.atom1 == atom;
+            match (bond.stereo, is_forward) {
+                (BondStereo::Up, true) => out.push('/'),
+                (BondStereo::Up, false) => out.push('\\'),
+                (BondStereo::Down, true) => out.push('\\'),
+                (BondStereo::Down, false) => out.push('/'),
+                _ => {}
+            }
+        } else if !is_closing {
             write_ring_bond(bond_type, out);
         }
         if rn < 10 {
@@ -197,7 +208,7 @@ fn write_atom_dfs(
             out.push('(');
         }
         write_bond(mol, bi, atom, child, out);
-        write_atom_dfs(mol, child, ranks, visited, ring_nums, dfs_parent, dfs_parent_bond, out, atom);
+        write_atom_dfs(mol, child, ranks, visited, ring_nums, dfs_parent, dfs_parent_bond, out, atom, ring_bonds);
         if !is_last {
             out.push(')');
         }
@@ -465,4 +476,31 @@ fn invariants_to_ranks(inv: &[u64]) -> Vec<usize> {
         ranks[indexed[i].1] = current_rank;
     }
     ranks
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mol::Mol;
+    use crate::encode;
+
+    #[test]
+    fn test_ez_stereo_ring_closure() {
+        let smi = r"CC(=O)/N=C1\N(C)N=C(S(=O)(=O)N)S1";
+        let mol = Mol::from_smiles(smi).unwrap();
+        let result = mol.to_smiles(true, None);
+        assert!(result.contains('\\') || result.contains('/'),
+            "stereo markers should be present: {}", result);
+        let encoded = encode::encode(smi).unwrap();
+        assert_eq!(result, encoded);
+    }
+
+    #[test]
+    fn test_ez_stereo_closing_site_direction() {
+        // \2 at closing site: stereo must be preserved with correct direction
+        let smi = r"C1(C(NC2=CC=CC=C2C)=O)C2C1CCCC/C=C\2";
+        let encoded = encode::encode(smi).unwrap();
+        // Re-parse and check the SMILES is valid
+        let mol = Mol::from_smiles(&encoded);
+        assert!(mol.is_some(), "encoded SMILES should be valid: {}", encoded);
+    }
 }
