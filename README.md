@@ -22,9 +22,8 @@ results = safe_oxidizer.encode_batch(smiles_list, n_jobs=8)
 Requires a Rust toolchain.
 
 ```bash
-# Install into a Python virtualenv
-pip install maturin
-maturin develop --release
+uv tool install maturin
+maturin develop --release --uv
 ```
 
 ## How it works
