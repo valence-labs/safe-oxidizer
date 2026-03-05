@@ -4,7 +4,37 @@ A pure Rust implementation of [SAFE](https://github.com/datamol-io/safe) (Sequen
 
 SAFE encodes molecules as dot-separated SMILES fragments with numbered attachment points, enabling sequential generation of molecules fragment-by-fragment. This crate reimplements `safe.encode()` in Rust for ~20x single-threaded speedup and near-linear parallel scaling.
 
-## Quick start
+## Installation
+
+Install from the latest [GitHub release](https://github.com/valence-labs/safe-oxidizer/releases):
+
+```bash
+# With uv
+uv pip install safe-oxidizer --find-links https://github.com/valence-labs/safe-oxidizer/releases/latest/download/
+
+# With pip
+pip install safe-oxidizer --find-links https://github.com/valence-labs/safe-oxidizer/releases/latest/download/
+```
+
+Or to pin a specific version:
+
+```bash
+uv pip install safe-oxidizer --find-links https://github.com/valence-labs/safe-oxidizer/releases/download/v0.1.0/
+```
+
+To add as a dependency in `pyproject.toml`:
+
+```toml
+[project]
+dependencies = ["safe-oxidizer"]
+
+[tool.uv]
+find-links = ["https://github.com/valence-labs/safe-oxidizer/releases/latest/download/"]
+```
+
+## Usage
+
+### SAFE encoding
 
 ```python
 import safe_oxidizer
@@ -14,10 +44,52 @@ safe_str = safe_oxidizer.safe_encode("Cc1ccc(-c2cc(C(F)(F)F)nn2-c2ccc(S(N)(=O)=O
 # 'c15ccc(cc1)S(N)(=O)=O.Cc1ccc3cc1.c13n5nc4c1.C4(F)(F)F'
 
 # Batch encode with parallelism
-results = safe_oxidizer.encode_batch(smiles_list, n_jobs=8)
+results = safe_oxidizer.encode_batch(smiles_list, n_jobs=8)  # Returns list[str | None]
 ```
 
-## Building
+### BPE tokenizer
+
+The `SafeTokenizer` is a byte-pair encoding tokenizer that uses SAFE encoding as a pre-tokenization step — each SMILES is first split into BRICS fragments, then BPE merges are applied within each fragment.
+
+```python
+from safe_oxidizer import SafeTokenizer
+
+# Train a tokenizer from an iterator of SMILES strings
+tokenizer = SafeTokenizer()
+tokenizer.train_from_iterator(iter(smiles_list), vocab_size=512)
+
+# Encode a SMILES string to token IDs
+ids = tokenizer.encode("CCO")
+
+# Decode token IDs back to a SAFE string
+safe_str = tokenizer.decode(ids)
+
+# Batch encode (parallel) — returns a padded numpy array
+token_array = tokenizer.batch_encode(smiles_list, max_length=128)
+
+# Batch encode with fragment shuffling (for data augmentation)
+token_array = tokenizer.batch_encode(smiles_list, max_length=128, shuffle=True)
+
+# Batch decode
+strings = tokenizer.batch_decode(token_array.tolist())
+
+# Save / load
+tokenizer.save("tokenizer.json")
+tokenizer = SafeTokenizer.load("tokenizer.json")
+```
+
+Special tokens:
+
+| Property | Description |
+|---|---|
+| `tokenizer.vocab_size` | Total vocabulary size |
+| `tokenizer.dot_token_id` | Fragment separator (`.`) |
+| `tokenizer.pad_token_id` | Padding token |
+| `tokenizer.bos_token_id` | Beginning of sequence |
+| `tokenizer.eos_token_id` | End of sequence |
+| `tokenizer.unk_token_id` | Unknown token |
+
+## Building from source
 
 Requires a Rust toolchain.
 
@@ -46,13 +118,14 @@ The encoder is a self-contained Rust implementation with no C/C++ dependencies:
 
 ```
 src/
-├── lib.rs            # PyO3 module: safe_encode(), encode_batch()
+├── lib.rs            # PyO3 module: safe_encode(), encode_batch(), SafeTokenizer
 ├── mol.rs            # Mol, Atom, Bond structs + sanitization
 ├── smiles_parser.rs  # SMILES string → Mol
 ├── smiles_writer.rs  # Mol → canonical SMILES string
 ├── brics.rs          # BRICS bond finding (predicate-based)
 ├── fragment.rs       # Bond cutting + connected components
-└── encode.rs         # SAFE encoding algorithm
+├── encode.rs         # SAFE encoding algorithm
+└── tokenizer.rs      # BPE tokenizer with SAFE pre-tokenization
 ```
 
 ## Testing
@@ -65,8 +138,7 @@ cargo test
 pytest tests/test_safe_oxidizer.py -v
 ```
 
-The Python test suite validates:
-- Roundtrip correctness: encode with Rust, decode with Python `safe.decode()`, verify chemical equivalence via `datamol.same_mol()`
-- Bracket atoms, charged species, isotopes, chirality, fused ring systems
-- Batch encoding correctness and parallelism
-- 10k-molecule chemical equivalence sweep
+## Known limitations
+
+- E/Z stereo across BRICS-cut double bonds is lost (inherent to SAFE encoding)
+- Aromatic SMILES output is kekulized (correct but differs from input form)

@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--train-n", type=int, default=50_000, help="SMILES to train tokenizer on")
     parser.add_argument("--eval-n", type=int, default=None, help="SMILES to evaluate (default: all)")
     parser.add_argument("--vocab-size", type=int, default=1000)
+    parser.add_argument("--shuffle", action="store_true", default=False, help="Shuffle SMILES before encoding")
     args = parser.parse_args()
 
     smiles_all = load_smiles(args.smiles_csv, args.eval_n)
@@ -42,14 +43,14 @@ def main():
     print(f"Tokenizer trained: vocab_size={tok.vocab_size}")
 
     print(f"Encoding {len(smiles_all)} SMILES...")
-    ids_list = [tok.encode(smi) for smi in tqdm(smiles_all)]
+    ids_list = tok.batch_encode(smiles_all, shuffle=args.shuffle)
     safe_strings = tok.batch_decode(ids_list)
 
     correct = 0
     failures = []
     for smi, safe_str in tqdm(zip(smiles_all, safe_strings), total=len(smiles_all), desc="same_mol"):
         mol1 = dm.to_mol(smi)
-        mol2 = dm.to_mol(safe_str)
+        mol2 = dm.to_mol(safe_str.replace("<pad>", ""))
         if dm.same_mol(mol1, mol2):
             correct += 1
         else:
@@ -64,7 +65,7 @@ def main():
             print(f"  input:   {smi}")
             print(f"  decoded: {safe_str}")
             print()
-    with open("failures.csv", "w") as f:
+    with open(f"failures_{args.shuffle}.csv", "w") as f:
         writer = csv.writer(f)
         writer.writerow(["input", "decoded"])
         for smi, safe_str in failures:

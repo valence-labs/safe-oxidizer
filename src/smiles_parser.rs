@@ -270,7 +270,7 @@ impl SmilesParser {
                         mag = mag * 10 + d.to_digit(10).unwrap() as i32;
                         self.advance();
                     } else if d == c {
-                        mag += 1;
+                        mag = if mag == 0 { 2 } else { mag + 1 };
                         self.advance();
                     } else {
                         break;
