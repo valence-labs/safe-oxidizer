@@ -237,3 +237,67 @@ class TestSpecialTokens:
         # All special tokens should be >= 256 + num_merges
         num_merges = tok.vocab_size - 256 - 5
         assert min_special >= 256 + num_merges
+
+
+class TestAdditionalTokens:
+    @pytest.fixture
+    def trained_tok(self):
+        tok = SafeTokenizer()
+        tok.train_from_iterator(iter(TRAIN_SMILES), vocab_size=350)
+        return tok
+
+    def test_add_tokens_encode_single(self, trained_tok):
+        gene = "ENSG00000141510"
+        trained_tok.add_tokens([gene])
+        expected_id = trained_tok.vocab_size - 1  # last token added
+        ids = trained_tok.encode(gene)
+        assert ids == [expected_id]
+
+    def test_add_tokens_deduplication(self, trained_tok):
+        gene = "ENSG00000141510"
+        trained_tok.add_tokens([gene])
+        size_after_first = trained_tok.vocab_size
+        trained_tok.add_tokens([gene])
+        assert trained_tok.vocab_size == size_after_first
+
+    def test_add_tokens_save_load(self, trained_tok):
+        genes = ["ENSG00000141510", "ENSG00000157764"]
+        trained_tok.add_tokens(genes)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        trained_tok.save(path)
+        loaded = SafeTokenizer.load(path)
+
+        assert loaded.vocab_size == trained_tok.vocab_size
+        assert loaded.num_additional_tokens == len(genes)
+        for gene in genes:
+            assert loaded.encode(gene) == trained_tok.encode(gene)
+
+        Path(path).unlink()
+
+    def test_bos_eos_encode(self, trained_tok):
+        smi = "CCO"
+        ids_plain = trained_tok.encode(smi)
+        ids_special = trained_tok.encode(smi, add_special_tokens=True)
+        assert ids_special[0] == trained_tok.bos_token_id
+        assert ids_special[-1] == trained_tok.eos_token_id
+        assert ids_special[1:-1] == ids_plain
+
+    def test_bos_eos_batch_encode(self, trained_tok):
+        smiles = ["CCO", "CCCOCC"]
+        batch = trained_tok.batch_encode(smiles, add_special_tokens=True)
+        assert int(batch[0, 0]) == trained_tok.bos_token_id
+        assert int(batch[1, 0]) == trained_tok.bos_token_id
+        # Last non-padding token in each row should be EOS
+        for row in batch:
+            non_pad = [int(x) for x in row if x != trained_tok.pad_token_id]
+            assert non_pad[-1] == trained_tok.eos_token_id
+
+    def test_vocab_size_grows(self, trained_tok):
+        base_size = trained_tok.vocab_size
+        genes = ["ENSG00000141510", "ENSG00000157764", "ENSG00000012048"]
+        trained_tok.add_tokens(genes)
+        assert trained_tok.vocab_size == base_size + len(genes)
+        assert trained_tok.num_additional_tokens == len(genes)

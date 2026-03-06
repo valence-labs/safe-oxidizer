@@ -24,6 +24,8 @@ struct TokenizerData {
     version: u32,
     merges: Vec<((u32, u32), u32)>,
     num_merges: u32,
+    #[serde(default)]
+    additional_tokens: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -163,9 +165,22 @@ fn pre_tokenize(smiles: &str) -> Vec<Vec<u8>> {
 pub struct SafeTokenizer {
     pub merges: HashMap<Pair, u32>,
     pub num_merges: u32,
+    pub additional_tokens: Vec<String>,
+    // not serialized; rebuilt on load and after mutation
+    additional_token_lookup: HashMap<String, u32>,
 }
 
 impl SafeTokenizer {
+    fn rebuild_lookup(&mut self) {
+        let base = 256 + self.num_merges + NUM_SPECIAL_TOKENS;
+        self.additional_token_lookup = self
+            .additional_tokens
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), base + i as u32))
+            .collect();
+    }
+
     fn train_core_incremental(
         &mut self,
         mut words: Vec<Word>,
@@ -244,7 +259,8 @@ impl SafeTokenizer {
     }
 
     fn build_vocab(&self) -> Vec<Vec<u8>> {
-        let total = 256 + self.num_merges as usize + NUM_SPECIAL_TOKENS as usize;
+        let total = 256 + self.num_merges as usize + NUM_SPECIAL_TOKENS as usize
+            + self.additional_tokens.len();
         let mut vocab: Vec<Vec<u8>> = (0..256u32).map(|i| vec![i as u8]).collect();
         vocab.resize(total, Vec::new());
 
@@ -263,6 +279,10 @@ impl SafeTokenizer {
         vocab[(base + 2) as usize] = b"<bos>".to_vec();
         vocab[(base + 3) as usize] = b"<eos>".to_vec();
         vocab[(base + 4) as usize] = b"<unk>".to_vec();
+
+        for (i, s) in self.additional_tokens.iter().enumerate() {
+            vocab[(base + 5 + i as u32) as usize] = s.as_bytes().to_vec();
+        }
 
         vocab
     }
@@ -302,11 +322,17 @@ impl SafeTokenizer {
     }
 
     fn encode_smiles(&self, smiles: &str) -> Vec<u32> {
+        if let Some(&id) = self.additional_token_lookup.get(smiles) {
+            return vec![id];
+        }
         let fragments = pre_tokenize(smiles);
         self.encode_fragments(&fragments)
     }
 
     fn encode_smiles_shuffled(&self, smiles: &str) -> Vec<u32> {
+        if let Some(&id) = self.additional_token_lookup.get(smiles) {
+            return vec![id];
+        }
         let mut fragments = pre_tokenize(smiles);
         fragments.shuffle(&mut thread_rng());
         self.encode_fragments(&fragments)
@@ -343,7 +369,7 @@ impl SafeTokenizer {
     }
 
     fn vocab_size_inner(&self) -> u32 {
-        256 + self.num_merges + NUM_SPECIAL_TOKENS
+        256 + self.num_merges + NUM_SPECIAL_TOKENS + self.additional_tokens.len() as u32
     }
 }
 
@@ -357,6 +383,8 @@ impl SafeTokenizer {
         Self {
             merges: HashMap::new(),
             num_merges: 0,
+            additional_tokens: Vec::new(),
+            additional_token_lookup: HashMap::new(),
         }
     }
 
@@ -432,35 +460,53 @@ impl SafeTokenizer {
         Ok(())
     }
 
-    pub fn encode(&self, smiles: &str) -> Vec<u32> {
-        self.encode_smiles(smiles)
+    #[pyo3(signature = (smiles, add_special_tokens=false))]
+    pub fn encode(&self, smiles: &str, add_special_tokens: bool) -> Vec<u32> {
+        let mut ids = self.encode_smiles(smiles);
+        if add_special_tokens {
+            ids.insert(0, self.bos_token_id());
+            ids.push(self.eos_token_id());
+        }
+        ids
     }
 
     pub fn decode(&self, ids: Vec<u32>) -> String {
         self.decode_ids(&ids)
     }
 
-    #[pyo3(signature = (smiles_list, max_length=None, shuffle=false))]
+    #[pyo3(signature = (smiles_list, max_length=None, shuffle=false, add_special_tokens=false))]
     pub fn batch_encode<'py>(
         &self,
         py: Python<'py>,
         smiles_list: Vec<String>,
         max_length: Option<usize>,
         shuffle: bool,
+        add_special_tokens: bool,
     ) -> Bound<'py, PyArray2<u32>> {
         if smiles_list.is_empty() {
             return PyArray2::zeros(py, [0, 0], false);
         }
 
+        let bos_id = self.bos_token_id();
+        let eos_id = self.eos_token_id();
+
         let encoded: Vec<Vec<u32>> = py.allow_threads(|| {
             smiles_list
                 .par_iter()
                 .map(|s| {
-                    if shuffle {
+                    let mut ids = if shuffle {
                         self.encode_smiles_shuffled(s)
                     } else {
                         self.encode_smiles(s)
+                    };
+                    if add_special_tokens {
+                        if let Some(n) = max_length {
+                            ids.truncate(n.saturating_sub(2));
+                        }
+                        ids.insert(0, bos_id);
+                        ids.push(eos_id);
                     }
+                    ids
                 })
                 .collect()
         });
@@ -533,6 +579,20 @@ impl SafeTokenizer {
         256 + self.num_merges + 4
     }
 
+    pub fn add_tokens(&mut self, tokens: Vec<String>) {
+        for t in tokens {
+            if !self.additional_token_lookup.contains_key(&t) {
+                self.additional_tokens.push(t.clone());
+            }
+        }
+        self.rebuild_lookup();
+    }
+
+    #[getter]
+    pub fn num_additional_tokens(&self) -> usize {
+        self.additional_tokens.len()
+    }
+
     pub fn get_vocab(&self) -> Vec<(u32, Vec<u8>)> {
         let vocab = self.build_vocab();
         vocab
@@ -550,6 +610,7 @@ impl SafeTokenizer {
             version: 1,
             merges,
             num_merges: self.num_merges,
+            additional_tokens: self.additional_tokens.clone(),
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -571,10 +632,14 @@ impl SafeTokenizer {
 
         let merges: HashMap<(u32, u32), u32> = data.merges.into_iter().collect();
 
-        Ok(SafeTokenizer {
+        let mut tok = SafeTokenizer {
             merges,
             num_merges: data.num_merges,
-        })
+            additional_tokens: data.additional_tokens,
+            additional_token_lookup: HashMap::new(),
+        };
+        tok.rebuild_lookup();
+        Ok(tok)
     }
 }
 
@@ -647,6 +712,7 @@ mod tests {
         let mut tok = SafeTokenizer::new();
         tok.merges.insert((67, 67), 256);
         tok.num_merges = 1;
+        tok.rebuild_lookup();
 
         let ids = tok.encode_smiles("CCO");
         let decoded = tok.decode_ids(&ids);
@@ -658,6 +724,8 @@ mod tests {
         let tok = SafeTokenizer {
             merges: HashMap::new(),
             num_merges: 0,
+            additional_tokens: Vec::new(),
+            additional_token_lookup: HashMap::new(),
         };
         let dot_id = tok.dot_token_id_inner();
 
@@ -672,6 +740,8 @@ mod tests {
         let tok = SafeTokenizer {
             merges: HashMap::new(),
             num_merges: 10,
+            additional_tokens: Vec::new(),
+            additional_token_lookup: HashMap::new(),
         };
         assert_eq!(tok.dot_token_id_inner(), 266);
         assert_eq!(tok.vocab_size_inner(), 256 + 10 + 5);
@@ -682,6 +752,8 @@ mod tests {
         let tok = SafeTokenizer {
             merges: HashMap::new(),
             num_merges: 0,
+            additional_tokens: Vec::new(),
+            additional_token_lookup: HashMap::new(),
         };
         let ids = tok.encode_fragment(b"CC");
         assert_eq!(ids, vec![67, 67]);
@@ -694,6 +766,8 @@ mod tests {
         let tok = SafeTokenizer {
             merges,
             num_merges: 1,
+            additional_tokens: Vec::new(),
+            additional_token_lookup: HashMap::new(),
         };
         let ids = tok.encode_fragment(b"CCC");
         assert_eq!(ids, vec![256, 67]);
